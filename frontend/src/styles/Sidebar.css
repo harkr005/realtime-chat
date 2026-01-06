@@ -1,0 +1,87 @@
+/* ...existing code... */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  height: 100vh; /* ensure sidebar has a definite height */
+ /* keep same width as before */
+  /* ...existing sidebar styles ... */
+}
+
+/* Scrollable users container (keeps existing layout, only enables scrolling) */
+.users-container {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Custom scrollbar to match message pane */
+.users-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.users-container::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+}
+
+.users-container::-webkit-scrollbar-thumb {
+  background: rgba(114, 9, 183, 0.45);
+  border-radius: 10px;
+  transition: background 0.2s ease;
+}
+
+.users-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(114, 9, 183, 0.75);
+}
+
+/* Firefox */
+.users-container {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(114, 9, 183, 0.45) rgba(255, 255, 255, 0.03);
+}
+
+/* Keep user-item visuals unchanged; these are safe defaults in case not present */
+.user-item {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  /* ...existing user-item styles are preserved elsewhere ... */
+}
+
+/* ...existing code... */.contacts {
+  flex: 1 1 auto;
+  min-height: 0;            /* <-- crucial: allows the contacts pane to shrink and overflow */
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+    }
+
+.contacts::-webkit-scrollbar {
+  width: 8px;
+}
+
+.contacts::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+}
+
+.contacts::-webkit-scrollbar-thumb {
+  background: rgba(114, 9, 183, 0.5);
+  border-radius: 10px;
+  transition: background 0.2s ease;
+}
+
+.contacts::-webkit-scrollbar-thumb:hover {
+  background: rgba(114, 9, 183, 0.8);
+}

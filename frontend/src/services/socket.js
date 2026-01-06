@@ -6,7 +6,7 @@ export function connectSocket(token) {
   if (socket) {
     socket.disconnect();
   }
-  socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000', {
+  socket = io(process.env.REACT_APP_SOCKET_URL || 'http://127.0.0.1:5000', {
     auth: { token },
     transports: ['websocket', 'polling']
   });

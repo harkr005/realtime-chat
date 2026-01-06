@@ -1,12 +1,22 @@
 import React, { useState } from 'react';
 import Login from './components/Login';
 import Chat from './components/Chat';
+import './index.css';
 
 function App() {
-  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user')) || null);
+  const [user, setUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('user');
+      return stored ? JSON.parse(stored) : null;
+    } catch (err) {
+      console.error('Error parsing user from localStorage:', err);
+      localStorage.removeItem('user');
+      return null;
+    }
+  });
 
   return (
-    <div style={{ padding: 20 }}>
+    <div className="app-container">
       {!user ? (
         <Login onLogin={setUser} />
       ) : (

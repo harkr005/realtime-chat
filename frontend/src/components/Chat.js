@@ -1,244 +1,499 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { connectSocket, getSocket } from '../services/socket';
+import { io } from 'socket.io-client';
+import Sidebar from './Sidebar';
+import MessageArea from './MessageArea';
+import Avatar from './Avatar';
+import EmojiPicker from 'emoji-picker-react';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:5000/api';
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://127.0.0.1:5000';
 
 export default function Chat({ user, onLogout }) {
-  const [toId, setToId] = useState("");
-  const [messages, setMessages] = useState([]);   // must be an array
+  const [socket, setSocket] = useState(null);
+  const [currentChat, setCurrentChat] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
-  const [typing, setTyping] = useState(false);
-  const [showUnreadBanner, setShowUnreadBanner] = useState(false);
-  const [firstUnreadIndex, setFirstUnreadIndex] = useState(-1);
+  const [isTyping, setIsTyping] = useState(false);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const scrollRef = useRef();
 
-  const socketRef = useRef(null);
-  const messagesEndRef = useRef(null);
-  const unreadBannerRef = useRef(null);
-  const chatContainerRef = useRef(null);
-  const toIdRef = useRef(toId);
-
-  const myId = user?.id || user?._id;
-
-  // Update ref when toId changes
+  // Connect to Socket
   useEffect(() => {
-    toIdRef.current = toId;
-  }, [toId]);
-
-  // Find first unread message index
-  const findFirstUnreadIndex = useCallback((msgs) => {
-    return msgs.findIndex(m => m.from !== myId && !m.read);
-  }, [myId]);
-
-  // Mark messages as read
-  const markMessagesAsRead = useCallback(async (fromUserId) => {
-    if (!fromUserId) return;
-    try {
+    if (user) {
       const token = localStorage.getItem('token');
-      await axios.post(`${API}/messages/read/${fromUserId}`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
+      if (!token) {
+        console.error('No token found for socket connection');
+        return;
+      }
+
+      const newSocket = io(SOCKET_URL, {
+        auth: { token },
+        transports: ['websocket', 'polling']
       });
-      // Update local state to mark messages as read
-      setMessages(prev => prev.map(m => 
-        m.from === fromUserId ? { ...m, read: true } : m
-      ));
-      setShowUnreadBanner(false);
-      setFirstUnreadIndex(-1);
-    } catch (err) {
-      console.error('Error marking messages as read:', err);
-    }
-  }, []);
 
-  // Scroll to unread banner or bottom
+      newSocket.on('connect', () => {
+        console.log('✓ Socket connected');
+      });
+
+      newSocket.on('connect_error', (err) => {
+        console.error('Socket connection error:', err);
+      });
+
+      newSocket.on('disconnect', (reason) => {
+        console.log('Socket disconnected:', reason);
+      });
+
+      setSocket(newSocket);
+      return () => {
+        newSocket.off('connect');
+        newSocket.off('connect_error');
+        newSocket.off('disconnect');
+        newSocket.disconnect();
+      };
+    }
+  }, [user]);
+
+  // Handle Socket Events
   useEffect(() => {
-    if (showUnreadBanner && unreadBannerRef.current) {
-      unreadBannerRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages, showUnreadBanner]);
+    if (socket) {
+      // Identity
+      socket.emit("joinRoom", user.id || user._id);
 
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const s = connectSocket(token);        // create or reuse
-    socketRef.current = s;                 // IMPORTANT: assign to ref
-    window.socket = s;                     // for quick console debugging
-    console.log('socket assigned to window.socket ->', !!s);
-
-    if (!s) {
-      console.error('No socket created — token missing or connect failed');
-      return;
-    }
-
-    s.on('connect', () => console.log('socket connected (client) id=', s.id, 'user:', JSON.parse(localStorage.getItem('user'))?.id));
-    s.on('connect_error', (err) => console.error('socket connect_error', err));
-    s.on('disconnect', () => console.log('socket disconnected (client)'));
-    s.on('newMessage', async (msg) => {
-      console.log('newMessage (client):', msg);
-      const currentToId = toIdRef.current?.trim();
-      const myUserId = JSON.parse(localStorage.getItem('user'))?.id;
-      
-      // If we're actively chatting with this person and they sent us a message,
-      // mark it as read immediately
-      if (msg.from === currentToId && msg.to === myUserId) {
-        // Mark as read on server
-        try {
-          const token = localStorage.getItem('token');
-          await axios.post(`${API}/messages/read/${msg.from}`, {}, {
-            headers: { Authorization: `Bearer ${token}` }
+      const handleNewMessage = (msg) => {
+        if (currentChat && (msg.from === currentChat._id || msg.to === currentChat._id)) {
+          setMessages((prev) => {
+            const exists = prev.some(m => m._id === msg._id);
+            if (exists) return prev;
+            // If message is from current chat, mark as read immediately
+            if (msg.from === currentChat._id) {
+              markAsRead(currentChat._id);
+            }
+            return [...prev, { ...msg, fromSelf: msg.from === (user.id || user._id) }];
           });
-          msg.read = true; // Mark locally as read
-        } catch (err) {
-          console.error('Error auto-marking message as read:', err);
         }
-      }
-      
-      // ensure messages is array when updating
-      setMessages(prev => Array.isArray(prev) ? [...prev, msg] : [msg]);
-    });
+      };
 
-    // Listen for messages being marked as read
-    s.on('messagesRead', ({ by }) => {
-      console.log('Messages marked as read by:', by);
-    });
+      const handleTyping = ({ from, typing }) => {
+        if (currentChat && from === currentChat._id) {
+          setIsTyping(typing);
+        }
+      };
 
-    // ask server to join personal room (safe)
-    const myUser = JSON.parse(localStorage.getItem('user'));
-    if (myUser?.id) s.emit('joinRoom', String(myUser.id));
+      const handleMessagesRead = ({ from }) => {
+        if (currentChat && from === currentChat._id) {
+          setMessages(prev => prev.map(msg =>
+            msg.to === currentChat._id ? { ...msg, read: true } : msg
+          ));
+        }
+      };
 
-    return () => {
-      if (s) s.disconnect();
-      window.socket = null;
-      socketRef.current = null;
-    };
-  }, []);
+      socket.on('newMessage', handleNewMessage);
+      socket.on('typing', handleTyping);
+      socket.on('messagesRead', handleMessagesRead);
 
-  const loadMessages = async () => {
+      return () => {
+        socket.off('newMessage', handleNewMessage);
+        socket.off('typing', handleTyping);
+        socket.off('messagesRead', handleMessagesRead);
+      };
+    }
+  }, [socket, currentChat, user]);
+
+  // Mark messages as read API call
+  const markAsRead = async (fromId) => {
     try {
       const token = localStorage.getItem('token');
-      if (!toId) return alert('Paste the other user id into "Chat with" field.');
-      const res = await axios.get(`${API}/messages/${toId}`, {
+      await axios.post(`${API_URL}/messages/read/${fromId}`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      let data = res.data;
-      // If API returns object with nested array, adapt (common shapes)
-      if (data && data.messages && Array.isArray(data.messages)) data = data.messages;
-      const arr = Array.isArray(data) ? data : (data ? [data] : []);
-      
-      // Check for unread messages
-      const unreadIdx = findFirstUnreadIndex(arr);
-      if (unreadIdx !== -1) {
-        setFirstUnreadIndex(unreadIdx);
-        setShowUnreadBanner(true);
-      } else {
-        setFirstUnreadIndex(-1);
-        setShowUnreadBanner(false);
-      }
-      
-      setMessages(arr);
-      console.log('loaded messages ->', arr);
     } catch (err) {
-      console.error('loadMessages error', err);
-      setMessages([]); // fallback
+      console.error("Failed to mark read", err);
     }
   };
 
-  const sendMessage = () => {
-    const toClean = (toId || '').trim();
-    const textClean = (text || '').trim();
+  // Load Messages when chat changes
+  useEffect(() => {
+    const fetchMessages = async () => {
+      if (currentChat) {
+        try {
+          const token = localStorage.getItem('token');
+          const config = { headers: { Authorization: `Bearer ${token}` } };
 
-    if (!toClean) {
-      alert('Enter the other user id to chat with');
-      return;
+          // Mark as read when opening chat
+          markAsRead(currentChat._id);
+
+          const res = await axios.get(`${API_URL}/messages/${currentChat._id}`, config);
+          setMessages(res.data.map(m => ({ ...m, fromSelf: m.from === (user.id || user._id) })));
+        } catch (err) {
+          console.error("Error loading messages:", err);
+        }
+      }
+    };
+    fetchMessages();
+  }, [currentChat, user]);
+
+  // Handle Send
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (text.trim().length > 0 && socket && socket.connected && currentChat) {
+      socket.emit('sendMessage', { to: currentChat._id, text });
+      setText("");
     }
-    if (!textClean) return; // don't send empty messages
+  };
 
-    console.log('EMIT sendMessage -> to:', toClean, 'text:', textClean);
+  // Handle Typing
+  const handleTyping = (e) => {
+    setText(e.target.value);
+    if (!socket || !currentChat) return;
 
-    const s = socketRef.current;
-    if (!s || !s.connected) {
-      console.error('Socket not connected', s);
-      alert('Socket not connected. Make sure backend is running.');
-      return;
+    socket.emit('typing', { to: currentChat._id, typing: true });
+
+    setTimeout(() => {
+      socket.emit('typing', { to: currentChat._id, typing: false });
+    }, 2000);
+  };
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleChangeChat = (chat) => {
+    setCurrentChat(chat);
+  };
+
+  // Handle Emoji Click
+  const onEmojiClick = (emojiObject) => {
+    setText((prev) => prev + emojiObject.emoji);
+  };
+
+  // Audio Recording Logic
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
+  const handleStartRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioFile = new File([audioBlob], "voice_note.webm", { type: "audio/webm" });
+        handleAudioUpload(audioFile);
+
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Error accessing microphone:", err);
+      alert("Could not access microphone.");
     }
+  };
 
-    // emit to server (server will broadcast back to both users)
-    s.emit('sendMessage', { to: toClean, text: textClean });
-
-    // When you reply, mark their messages as read
-    if (showUnreadBanner) {
-      markMessagesAsRead(toClean);
+  const handleStopRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
     }
+  };
 
-    setText(''); // clear input
+  const handleAudioUpload = async (file) => {
+    const formData = new FormData();
+    formData.append('image', file); // Multer logic reuses 'image' field for file uploads ideally, or we can update backend to accept 'file' field but 'image' works as generic key if we don't change backend validation
+
+    // NOTE: In the backend 'upload.single('image')' is used. keeping it consistent.
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.post(`${API_URL}/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const audioUrl = res.data.imageUrl; // Backend returns { imageUrl: ... }
+
+      socket.emit('sendMessage', {
+        to: currentChat._id,
+        text: "",
+        type: "audio",
+        audio: audioUrl
+      });
+    } catch (err) {
+      console.error("Audio upload failed:", err);
+    }
+  };
+
+  // Handle Image Upload
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.post(`${API_URL}/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      const imageUrl = res.data.imageUrl;
+      // Send image message via socket
+      socket.emit('sendMessage', {
+        to: currentChat._id,
+        text: "",
+        type: "image",
+        image: imageUrl
+      });
+    } catch (err) {
+      console.error("Image upload failed:", err);
+    }
   };
 
   return (
-    <div>
-      <h2>Welcome {user?.username}</h2>
+    <div className="chat-container">
+      <div className="chat-body glass-panel">
+        <div className="sidebar-wrapper">
+          <Sidebar
+            currentUser={user}
+            changeChat={handleChangeChat}
+            currentChat={currentChat}
+            onLogout={onLogout}
+          />
+        </div>
 
-      <button onClick={onLogout}>Logout</button>
-
-      <br /><br />
-
-      <input
-        placeholder="Enter user ID to chat with"
-        value={toId}
-        onChange={(e) => setToId(e.target.value)}
-      />
-      <button onClick={loadMessages}>Load Messages</button>
-
-      <div 
-        ref={chatContainerRef}
-        style={{ border: "1px solid #ccc", height: "300px", overflow: "auto", marginTop: 10 }}
-      >
-        {(Array.isArray(messages) ? messages : []).map((m, index) => (
-          <React.Fragment key={m._id || m.createdAt || Math.random()}>
-            {/* Unread messages banner */}
-            {showUnreadBanner && index === firstUnreadIndex && (
-              <div 
-                ref={unreadBannerRef}
-                onClick={() => markMessagesAsRead(toId.trim())}
-                style={{
-                  background: '#25D366',
-                  color: 'white',
-                  textAlign: 'center',
-                  padding: '8px',
-                  margin: '10px 0',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '13px',
-                  fontWeight: 'bold'
-                }}
-              >
-                ↓ {messages.filter(msg => msg.from !== myId && !msg.read).length} UNREAD MESSAGES — Click to mark as read
+        <div className="chat-area-wrapper">
+          {currentChat ? (
+            <>
+              <div className="chat-header">
+                <Avatar username={currentChat.username} image={currentChat.avatarImage} size="md" />
+                <div className="header-info">
+                  <h3>{currentChat.username}</h3>
+                  <span className="status-text">
+                    {isTyping ? "Typing..." : "Online"}
+                  </span>
+                </div>
               </div>
-            )}
-            <div style={{ textAlign: (m.from === myId) ? "right" : "left", margin: 10 }}>
-              <div>{m.text}</div>
-              <small>{new Date(m.createdAt).toLocaleTimeString()}</small>
-            </div>
-          </React.Fragment>
-        ))}
 
-        {typing && <i>typing...</i>}
-        <div ref={messagesEndRef} />
+              <MessageArea
+                messages={messages}
+                currentChat={currentChat}
+                currentUser={user}
+                scrollRef={scrollRef}
+                typing={isTyping}
+              />
+
+              <div className="chat-input-container">
+                {showEmoji && (
+                  <div className="emoji-picker-wrapper">
+                    <EmojiPicker
+                      onEmojiClick={onEmojiClick}
+                      theme="dark"
+                      width="100%"
+                      height="350px"
+                    />
+                  </div>
+                )}
+                <div className="chat-input">
+                  <button
+                    className="emoji-btn"
+                    type="button"
+                    onClick={() => setShowEmoji(!showEmoji)}
+                  >
+                    😊
+                  </button>
+                  <label className="emoji-btn" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                    📎
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={handleImageUpload}
+                    />
+                  </label>
+                  <button
+                    className={`emoji-btn ${isRecording ? "recording" : ""}`}
+                    type="button"
+                    onClick={isRecording ? handleStopRecording : handleStartRecording}
+                    style={{ color: isRecording ? '#ff4d4d' : 'inherit' }}
+                  >
+                    {isRecording ? "⏹" : "🎤"}
+                  </button>
+                  <form className="input-form" onSubmit={handleSend}>
+                    <input
+                      type="text"
+                      placeholder="Type a message..."
+                      value={text}
+                      onChange={handleTyping}
+                      onFocus={() => setShowEmoji(false)}
+                    />
+                    <button type="submit" className="send-btn">➤</button>
+                  </form>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="welcome-screen">
+              <Avatar username={user.username} image={user.avatarImage} size="xl" />
+              <h2>Welcome, {user.username}!</h2>
+              <p>Select a contact to start chatting.</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      <input
-        style={{ width: "80%", marginTop: 10 }}
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          // emit typing only if socket exists
-          if (socketRef?.current) {
-            socketRef.current.emit("typing", { to: toId.trim(), typing: !!e.target.value });
+      <style jsx="true">{`
+        .chat-container {
+          height: 90vh;
+          width: 90vw;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+        }
+        .chat-body {
+          height: 100%;
+          width: 100%;
+          display: grid;
+          grid-template-columns: 25% 75%;
+          overflow: hidden;
+        }
+        
+        @media (max-width: 768px) {
+          .chat-container {
+             width: 100vw;
+             height: 100vh;
+             border-radius: 0;
           }
-        }}
-        onKeyDown={(e) => { if (e.key === 'Enter') sendMessage(); }}
-        placeholder="Type a message"
-      />
-      <button onClick={sendMessage}>Send</button>
+          .chat-body { 
+            grid-template-columns: 100%;
+            border-radius: 0;
+            border: none;
+          }
+          .sidebar-wrapper { 
+            display: ${currentChat ? 'none' : 'block'}; 
+            width: 100%;
+            height: 100%;
+          }
+          .chat-area-wrapper { 
+            display: ${currentChat ? 'flex' : 'none'}; 
+            width: 100%;
+            height: 100%;
+          }
+        }
+
+        .chat-area-wrapper {
+          display: flex;
+          flex-direction: column;
+          background: var(--chat-bg);
+          height: 100%;
+          min-height: 0; 
+          position: relative;
+        }
+
+        .chat-header {
+          padding: 15px 30px;
+          display: flex;
+          align-items: center;
+          gap: 15px;
+          border-bottom: 1px solid var(--glass-border);
+          background: rgba(0,0,0,0.1);
+          flex-shrink: 0;
+        }
+        .header-info h3 { margin: 0; font-size: 1.1rem; }
+        .status-text { font-size: 0.8rem; color: var(--primary); }
+
+        .chat-input-container {
+           position: relative;
+           flex-shrink: 0;
+        }
+
+        .emoji-picker-wrapper {
+          position: absolute;
+          bottom: 80px;
+          left: 20px;
+          z-index: 10;
+        }
+
+        .chat-input {
+          padding: 20px;
+          background: rgba(0,0,0,0.2);
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .emoji-btn {
+           background: transparent;
+           border: none;
+           font-size: 1.5rem;
+           cursor: pointer;
+           padding: 5px;
+           border-radius: 50%;
+           transition: 0.2s;
+        }
+        .emoji-btn:hover { background: rgba(255,255,255,0.1); }
+        .emoji-btn.recording {
+          animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+          0% { box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.4); }
+          70% { box-shadow: 0 0 0 10px rgba(255, 77, 77, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(255, 77, 77, 0); }
+        }
+
+        .input-form {
+          display: flex;
+          width: 100%;
+          gap: 10px;
+        }
+
+        .chat-input input {
+          flex: 1;
+          padding: 12px 20px;
+          border-radius: 30px;
+          border: 1px solid var(--glass-border);
+          background: rgba(255,255,255,0.05);
+          color: white;
+          font-size: 1rem;
+        }
+        .send-btn {
+          background: var(--primary);
+          color: white;
+          padding: 10px 20px;
+          border-radius: 30px;
+          font-size: 1.2rem;
+          cursor: pointer;
+          border: none;
+        }
+        .send-btn:hover { background: var(--accent); }
+
+        .welcome-screen {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            gap: 20px;
+        }
+      `}</style>
     </div>
   );
 }
